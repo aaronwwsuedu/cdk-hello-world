@@ -59,6 +59,19 @@ export class HelloWorldStack extends cdk.Stack {
       imageScanOnPush: true, 
     });
     docker_repository.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // add lifecycle rules to automatically remove old images. This improves our security posture by removing stale data, and reduces our
+    // Amazon Inspector costs by reducing the number of images to scan.
+    docker_repository.addLifecycleRule({
+      description: "Maintain no more than 5 tagged images",
+      maxImageCount: 5,
+      tagStatus: ecr.TagStatus.ANY,
+    }),
+    docker_repository.addLifecycleRule({
+      description: "Restrict repo to 1 untagged image",
+      maxImageCount: 1,
+      tagStatus: ecr.TagStatus.UNTAGGED
+    })
+
 
 
     // create a git repo to store the Dockerfile for our hello world container
