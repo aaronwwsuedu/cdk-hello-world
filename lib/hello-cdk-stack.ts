@@ -50,12 +50,13 @@ export class HelloWorldStack extends cdk.Stack {
       retention: logs.RetentionDays.SIX_MONTHS,
     });
 
-    // create a docker registry to store our test docker container image. Remove container when Stack is destroyed.
-    const docker_registry = new ecr.Repository(this,'helloWorldECRepo',{
+    // create a docker repository to store our test docker container image. Remove container when Stack is destroyed.
+    const docker_repository = new ecr.Repository(this,'helloWorldECRepo',{
       encryption: ecr.RepositoryEncryption.AES_256,
-      repositoryName: 'helloworldrepo'
+      repositoryName: 'helloworldrepo',
+      imageScanOnPush: true, // this is deprecated in favor of policy at the registry level, but if we leave it off, we generate Security Hub Findings.
     });
-    docker_registry.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    docker_repository.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
 
     // create a git repo to store the Dockerfile for our hello world container
@@ -112,7 +113,7 @@ export class HelloWorldStack extends cdk.Stack {
         }
       }),
       environmentVariables: {
-        REPOSITORY_URI: { value: docker_registry.repositoryUri },
+        REPOSITORY_URI: { value: docker_repository.repositoryUri },
         ECS_CONTAINER_NAME: { value: 'helloWorld' }
       },
       environment: {
@@ -129,7 +130,7 @@ export class HelloWorldStack extends cdk.Stack {
       project: pipelineProject,
     }))
     // allow the build to write to ECR.
-    docker_registry.grantPullPush(pipelineProject)
+    docker_repository.grantPullPush(pipelineProject)
 
 
     // create a systems manager parameter to store a value
@@ -196,7 +197,7 @@ export class HelloWorldStack extends cdk.Stack {
     // make sure role created by Cdk can talk to SSM
     adminAsg.role.addManagedPolicy(iam.ManagedPolicy.fromManagedPolicyArn(this,"SSMManagedInstance","arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"))
     // make sure role created by Cdk can update our docker registry
-    docker_registry.grantPullPush(adminAsg.role) 
+    docker_repository.grantPullPush(adminAsg.role) 
     efsFs.grant(adminAsg.role,'elasticfilesystem:ClientWrite')
     efsFs.connections.allowDefaultPortFrom(adminAsg)
 
@@ -223,7 +224,6 @@ export class HelloWorldStack extends cdk.Stack {
       vpcSubnets: default_vpc.selectSubnets( { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } ),
       instanceType: new ec2.InstanceType(props.ec2_instance_size),
       machineImage: ecs.EcsOptimizedImage.amazonLinux2(),
-      keyName: props.ssh_access_key_name,
       minCapacity: 0,
       maxCapacity: 3,
       newInstancesProtectedFromScaleIn: false,
@@ -236,10 +236,6 @@ export class HelloWorldStack extends cdk.Stack {
       updatePolicy: autoscaling.UpdatePolicy.rollingUpdate(),
       requireImdsv2: true
     });
-    for (let range of props.admin_access_nets) {
-      ecsAutoScalingGroup.connections.allowFrom(ec2.Peer.ipv4(range),ec2.Port.allTraffic(),'Allow access from Admin network')
-    }
-
 
     // cdk will insert userdata to make sure these instances join the cluster automatically. However, we want to extend this so we know
     // new members are pre-patched before they join.
@@ -271,7 +267,7 @@ export class HelloWorldStack extends cdk.Stack {
     // add the container to the task, including any environment variables we want to push in to the docker runtime
     const container = helloWorldTaskDefn.addContainer('helloWorldContainer',{
       containerName: 'helloWorld',
-      image: ecs.ContainerImage.fromEcrRepository(docker_registry,'latest'),
+      image: ecs.ContainerImage.fromEcrRepository(docker_repository,'latest'),
       environment: {
         'TEST_ENV_VAR': 'Hard-coded-string',
         //'TEST_SSM_VAR': 'foo',
