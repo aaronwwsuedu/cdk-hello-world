@@ -1,0 +1,16 @@
+<html>
+	<body>
+		<h1>Hello World!</h1>
+		<p>
+		Current Server Time: <!--#echo var="DATE_LOCAL" -->
+		</p><p>
+		<table>
+			<tr><th>TEST_SSM_VAR</th><td><!--#echo var="TEST_SSM_VAR" --></td></tr>
+			<tr><th>TEST_SECRET_VAR</th><td><!--#echo var="TEST_SECRET_VAR" --></td></tr>
+		</table>
+		</p><p>
+		<a href="efs/foo.txt">This link goes to a file hosted in efs!</a>
+		</p>
+	</body>
+</html>
+
