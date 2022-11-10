@@ -54,7 +54,9 @@ export class HelloWorldStack extends cdk.Stack {
     const docker_repository = new ecr.Repository(this,'helloWorldECRepo',{
       encryption: ecr.RepositoryEncryption.AES_256,
       repositoryName: 'helloworldrepo',
-      imageScanOnPush: true, // this is deprecated in favor of policy at the registry level, but if we leave it off, we generate Security Hub Findings.
+      // image scan on push at the repository level is depreciated, accounts should instead set a scan policy at the registry
+      // level to apply to all repositories, but if leaving this unset or false will generate a Security Hub Finding.
+      imageScanOnPush: true, 
     });
     docker_repository.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
@@ -119,6 +121,7 @@ export class HelloWorldStack extends cdk.Stack {
       environment: {
         computeType: codebuild.ComputeType.SMALL,
         privileged: true,
+        
       },
       timeout: cdk.Duration.minutes(5),
     }); 
@@ -182,6 +185,7 @@ export class HelloWorldStack extends cdk.Stack {
       maxCapacity: 1,
       newInstancesProtectedFromScaleIn: false,
       maxInstanceLifetime: cdk.Duration.days(7),
+      requireImdsv2: true,
       terminationPolicies: [
         autoscaling.TerminationPolicy.OLDEST_INSTANCE,
         autoscaling.TerminationPolicy.CLOSEST_TO_NEXT_INSTANCE_HOUR,
@@ -279,6 +283,9 @@ export class HelloWorldStack extends cdk.Stack {
       },
       essential: true,
       memoryLimitMiB: 512,
+      // allowing the container to write to its own ephemeral filesystem will generate a finding, but apache expects to be able 
+      // to write temporary and pid files.
+      //readonlyRootFilesystem: true,
       logging: ecs.LogDrivers.awsLogs({ 
         logGroup: loggroup,
         streamPrefix: 'helloWorld',
