@@ -50,7 +50,7 @@ export class HelloWorldStack extends cdk.Stack {
       retention: logs.RetentionDays.SIX_MONTHS,
     });
 
-    // create a docker repository to store our test docker container image. Remove container when Stack is destroyed.
+    // create a docker repository to store our test docker container image. 
     const docker_repository = new ecr.Repository(this,'helloWorldECRepo',{
       encryption: ecr.RepositoryEncryption.AES_256,
       repositoryName: 'helloworldrepo',
@@ -58,7 +58,6 @@ export class HelloWorldStack extends cdk.Stack {
       // level to apply to all repositories, but if leaving this unset or false will generate a Security Hub Finding.
       imageScanOnPush: true, 
     });
-    docker_repository.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     // add lifecycle rules to automatically remove old images. This improves our security posture by removing stale data, and reduces our
     // Amazon Inspector costs by reducing the number of images to scan.
     docker_repository.addLifecycleRule({
@@ -168,7 +167,6 @@ export class HelloWorldStack extends cdk.Stack {
       vpc: default_vpc,
       enableAutomaticBackups: true,
       encrypted: true,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
       fileSystemName: 'helloWorldEFS'
     });
     
