@@ -69,19 +69,7 @@ Use deployment policies to ensure updates to the ECR repository are automaticall
 Use IAM Roles and Policies to ensure each component of the cluster can access the resources they need
 Avoid AWS-Managed IAM Policies where possible, AWS-Managed policies are designed for broad access and are not strictly zero-trust
 
-Unfullfilled:
+Unfullfilled/Unverified:
 
-resources to run a containerized application
 logs must be captured and stored for 2 months and then removed
-parameters passed to container must be stored somewhere
-the service must be self-maintaining: if the container is updated, the service rolls out the update automatically.
-the service must be implemented using zero-trust: it can access the cloud resources it needs to run, but no other resources. If the service is compromised, zero-trust protects other resources in the cloud.
-
-Configure the log group retention policy to remove logs after 60 days.
-Use systems manager to store public parameters
-Use Secrets Manager to store secrets.
-Leverage Systems Manager to ensure long-term EC2 hosts are automatically patched
-Leverage AutoScaler aging policies to ensure short-term EC2 hosts are automatically rotated
-Use deployment policies to ensure updates to the ECR repository are automatically deployed to a cluster
-
 */

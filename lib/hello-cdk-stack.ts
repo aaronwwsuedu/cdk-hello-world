@@ -39,19 +39,19 @@ export class HelloWorldStack extends cdk.Stack {
     const default_vpc = ec2.Vpc.fromLookup(this,'DefaultVpc',{ vpcId: props.default_vpc_id})
 
     // create a key we will use to encrypt a cloudwatch group.
-    //const kms_cloudwatch_key = new kms.Key(this,'helloWorldCWKey',{
+    //const kms_cloudwatch_key = new kms.Key(this,'HelloWorldCWKey',{
     //  enableKeyRotation: true,
     //});
-    //kms_cloudwatch_key.addAlias('alias/helloWorldCWKey');
+    //kms_cloudwatch_key.addAlias('alias/HelloWorldCWKey');
 
     // create the group too.
     const loggroup = new logs.LogGroup(this,'HelloCWLogs',{
-      //encryptionKey: new kms.Key(this,'helloWorldCWKey'),
+      //encryptionKey: new kms.Key(this,'HelloWorldCWKey'),
       retention: logs.RetentionDays.SIX_MONTHS,
     });
 
     // create a docker repository to store our test docker container image. 
-    const docker_repository = new ecr.Repository(this,'helloWorldECRepo',{
+    const docker_repository = new ecr.Repository(this,'HelloWorldECRepo',{
       encryption: ecr.RepositoryEncryption.AES_256,
       repositoryName: 'helloworldrepo',
       // image scan on push at the repository level is depreciated, accounts should instead set a scan policy at the registry
@@ -74,7 +74,7 @@ export class HelloWorldStack extends cdk.Stack {
 
 
     // create a git repo to store the Dockerfile for our hello world container
-    const gitrepo = new codecommit.Repository(this,'helloWorld',{
+    const gitrepo = new codecommit.Repository(this,'HelloWorld',{
       repositoryName: 'HelloWorld',
       description: "Hello World demo container source",
       code: codecommit.Code.fromDirectory(path.join(__dirname,'..','hello-world-container')),
@@ -128,7 +128,7 @@ export class HelloWorldStack extends cdk.Stack {
       }),
       environmentVariables: {
         REPOSITORY_URI: { value: docker_repository.repositoryUri },
-        ECS_CONTAINER_NAME: { value: 'helloWorld' }
+        ECS_CONTAINER_NAME: { value: 'HelloWorld' }
       },
       environment: {
         computeType: codebuild.ComputeType.SMALL,
@@ -149,7 +149,7 @@ export class HelloWorldStack extends cdk.Stack {
 
 
     // create a systems manager parameter to store a value
-    const ssmEnvParam = new ssm.StringParameter(this,'helloWorldSsmParam',{
+    const ssmEnvParam = new ssm.StringParameter(this,'HelloWorldSsmParam',{
       description: "a parameter needed by hello world",
       parameterName: '/helloworld/development/test_ssm_param',
       tier: ssm.ParameterTier.STANDARD,
@@ -163,11 +163,11 @@ export class HelloWorldStack extends cdk.Stack {
 
     // Create EFS volume for files. EFS volume will be available to admin EC2 nodes we created above, and to the container we create below. The container will only 
     // get read access.
-    const efsFs = new efs.FileSystem(this,'helloWorldExternalFiles',{
+    const efsFs = new efs.FileSystem(this,'HelloWorldExternalFiles',{
       vpc: default_vpc,
       enableAutomaticBackups: true,
       encrypted: true,
-      fileSystemName: 'helloWorldEFS'
+      fileSystemName: 'HelloWorldEFS'
     });
     
 
@@ -175,17 +175,24 @@ export class HelloWorldStack extends cdk.Stack {
     // because we want an ec2 instance to build our docker image, deploy files to efs, etc... use the userData to make 
     // the host useful for that.
     const userData = ec2.UserData.forLinux();
+    // update baseline OS and install additional tools
     userData.addCommands('yum update -y');
-    userData.addCommands('yum install -y docker amazon-efs-utils')
-    userData.addCommands('systemctl docker.service enable')
+    userData.addCommands('yum install -y docker amazon-efs-utils git')
+    // enable docker. No need to start docker becauase we'll be rebooting
+    userData.addCommands('systemctl enable docker.service')
+    // add access to EFS filesystem
     userData.addCommands('mkdir /efs')
     userData.addCommands('echo "' + efsFs.fileSystemId + ':/  /efs  efs _netdev,noresvport,tls 0 0" >> /etc/fstab')
+    // configure git to take advantage of our EC2 intance role
+    userData.addCommands("git config --global credential.helper '!aws codecommit credential-helper $@'")
+    userData.addCommands('git config --global credential.UseHttpPath true')
+    // add command to reboot when config is done.
     userData.addOnExitCommands('reboot')
 
     // create an autoscaling group for management interfaces? why an ASG? because we can, and even the management ec2 instance we'll use to
     // make a docker image should be treated as if it's not a pet.
     // use standard AmazonLinux 2
-    const adminAsg = new autoscaling.AutoScalingGroup(this,'helloWorldAdminAsg',{
+    const adminAsg = new autoscaling.AutoScalingGroup(this,'HelloWorldAdminAsg',{
       autoScalingGroupName: "HelloWorldAdminAsg",
       vpc: default_vpc,
       vpcSubnets: default_vpc.selectSubnets( { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } ),
@@ -208,13 +215,15 @@ export class HelloWorldStack extends cdk.Stack {
       adminAsg.connections.allowFrom(ec2.Peer.ipv4(range),ec2.Port.allTraffic(),'Allow access from Admin network')
     }
 
-    adminAsg.addUserData(userData.render()) // make sure we patch on boot
-    // make sure role created by Cdk can talk to SSM
+    adminAsg.addUserData(userData.render()) // make sure we set up our admin server on first boot
+    // make sure role created by Cdk can talk to Systems Manager
     adminAsg.role.addManagedPolicy(iam.ManagedPolicy.fromManagedPolicyArn(this,"SSMManagedInstance","arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"))
-    // make sure role created by Cdk can update our docker registry
+   
+    // make sure role created by Cdk can update our docker registry and our git repo.
     docker_repository.grantPullPush(adminAsg.role) 
     efsFs.grant(adminAsg.role,'elasticfilesystem:ClientWrite')
     efsFs.connections.allowDefaultPortFrom(adminAsg)
+    gitrepo.grantPullPush(adminAsg.role)
 
   
     // NOTICE HOW WE DID NOT NEED TO CREATE POLICIES. This is what CDK does for us!
@@ -225,7 +234,7 @@ export class HelloWorldStack extends cdk.Stack {
 
     // create ECS cluster. Disable fargate because we don't want it for this demo example, but enable container insights to get better metrics
     // of the containerized workload.
-    const ecsCluster = new ecs.Cluster(this,'helloWorldECS',{
+    const ecsCluster = new ecs.Cluster(this,'HelloWorldECS',{
       vpc: default_vpc,
       containerInsights: true,
       enableFargateCapacityProviders: false,
@@ -233,7 +242,7 @@ export class HelloWorldStack extends cdk.Stack {
     });
     // create an autoscaling group to run ec2 instances attached to the container. Use the ECS-optimized AmazonLinux AMI
     // we are not using a launchTemplate here.
-    const ecsAutoScalingGroup = new autoscaling.AutoScalingGroup(this,'helloWorldASG',{
+    const ecsAutoScalingGroup = new autoscaling.AutoScalingGroup(this,'HelloWorldASG',{
       autoScalingGroupName: "HelloWorldECSAsg",
       vpc: default_vpc,
       vpcSubnets: default_vpc.selectSubnets( { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } ),
@@ -263,7 +272,7 @@ export class HelloWorldStack extends cdk.Stack {
     
 
     // define a capacity provider that uses the ASG to allow ECS to create and destroy instances, assign it to our cluster.
-    const ecsCapacityProvider = new ecs.AsgCapacityProvider(this,'helloWorldCap',{
+    const ecsCapacityProvider = new ecs.AsgCapacityProvider(this,'HelloWorldCap',{
       capacityProviderName: "HelloWorldECSCapacityProvider",
       autoScalingGroup: ecsAutoScalingGroup,
       machineImageType: ecs.MachineImageType.AMAZON_LINUX_2,
@@ -273,15 +282,15 @@ export class HelloWorldStack extends cdk.Stack {
     ecsCluster.addAsgCapacityProvider(ecsCapacityProvider)
    
     // define a task to run our service. this doesn't run the service, it only defines it
-    const helloWorldTaskDefn = new ecs.TaskDefinition(this,'helloWorldTaskDefn',{
+    const HelloWorldTaskDefn = new ecs.TaskDefinition(this,'HelloWorldTaskDefn',{
       compatibility: ecs.Compatibility.EC2,
       memoryMiB: '512',
       cpu: '128',
       networkMode: ecs.NetworkMode.AWS_VPC, // AWS_VPC networking means the container gets to use security groups.
     });
     // add the container to the task, including any environment variables we want to push in to the docker runtime
-    const container = helloWorldTaskDefn.addContainer('helloWorldContainer',{
-      containerName: 'helloWorld',
+    const container = HelloWorldTaskDefn.addContainer('HelloWorldContainer',{
+      containerName: 'HelloWorld',
       image: ecs.ContainerImage.fromEcrRepository(docker_repository,'latest'),
       environment: {
         'TEST_ENV_VAR': 'Hard-coded-string',
@@ -299,7 +308,7 @@ export class HelloWorldStack extends cdk.Stack {
       //readonlyRootFilesystem: true,
       logging: ecs.LogDrivers.awsLogs({ 
         logGroup: loggroup,
-        streamPrefix: 'helloWorld',
+        streamPrefix: 'HelloWorld',
         mode: ecs.AwsLogDriverMode.NON_BLOCKING}), // send container logs to cloudwatch
       portMappings: [ 
         { containerPort: 80 }
@@ -310,11 +319,11 @@ export class HelloWorldStack extends cdk.Stack {
       // healthCheck
     });
     // grant the container access to any props we create.
-    // ssm_param.grantRead(helloWorldTaskDefn.taskRole)
-    //ssmEnvParam.grantRead(helloWorldTaskDefn.taskRole)
-    //secretManagerEnvSecret.grantRead(helloWorldTaskDefn.taskRole)
+    // ssm_param.grantRead(HelloWorldTaskDefn.taskRole)
+    //ssmEnvParam.grantRead(HelloWorldTaskDefn.taskRole)
+    //secretManagerEnvSecret.grantRead(HelloWorldTaskDefn.taskRole)
 
-    helloWorldTaskDefn.addVolume({
+    HelloWorldTaskDefn.addVolume({
       name: 'efs',
       efsVolumeConfiguration: {
         fileSystemId: efsFs.fileSystemId,
@@ -329,10 +338,10 @@ export class HelloWorldStack extends cdk.Stack {
     });
 
     // create the service. The service runs the task definition. IN our case, we want the service to be highly available, so we'll run at least two instances.
-    const helloWorldService = new ecs.Ec2Service(this,'helloWorldService',{
-      serviceName: "helloWorldService",
+    const HelloWorldService = new ecs.Ec2Service(this,'HelloWorldService',{
+      serviceName: "HelloWorldService",
       cluster: ecsCluster,
-      taskDefinition: helloWorldTaskDefn,
+      taskDefinition: HelloWorldTaskDefn,
       desiredCount: 2,
       capacityProviderStrategies: [
         {
@@ -344,14 +353,14 @@ export class HelloWorldStack extends cdk.Stack {
       placementStrategies: [ ecs.PlacementStrategy.spreadAcross('attribute:ecs.availability-zone'), ecs.PlacementStrategy.packedByMemory() ],
     });
     // make sure the service goes away when we kill the CfnStack
-    helloWorldService.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY)
+    HelloWorldService.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY)
 
-    // we need to explicity grant SG access from the Hello World Service to the EFS volume
-    efsFs.connections.allowFrom(helloWorldService,ec2.Port.tcp(2049))
+    // we need to explicity grant SG access from the hello world service to the EFS volume
+    efsFs.connections.allowFrom(HelloWorldService,ec2.Port.tcp(2049))
 
     // create a load balancer to present the application
-    const helloWorldLB = new elb2.ApplicationLoadBalancer(this,'helloWorldLB',{
-      loadBalancerName: "helloWorldAlb",
+    const HelloWorldLB = new elb2.ApplicationLoadBalancer(this,'HelloWorldLB',{
+      loadBalancerName: "HelloWorldAlb",
       vpc: default_vpc,
       internetFacing: true,
       deletionProtection: false,
@@ -363,7 +372,7 @@ export class HelloWorldStack extends cdk.Stack {
     deployStage.addAction(
       new cdk.aws_codepipeline_actions.EcsDeployAction({
         actionName: "DeployAction",
-        service: helloWorldService,
+        service: HelloWorldService,
         input: build_output,
       })
     );
@@ -374,16 +383,16 @@ export class HelloWorldStack extends cdk.Stack {
     
 
 
-    const httpListener = helloWorldLB.addListener('httpListener',{
+    const httpListener = HelloWorldLB.addListener('httpListener',{
       port: 80,
       protocol: elb2.ApplicationProtocol.HTTP,
       open: true,
     });
-    const httpTargetGroup = httpListener.addTargets('helloWorldTarget',{
+    const httpTargetGroup = httpListener.addTargets('HelloWorldTarget',{
       port: 80,
       targets: [
-        helloWorldService.loadBalancerTarget({
-          containerName: 'helloWorld',
+        HelloWorldService.loadBalancerTarget({
+          containerName: 'HelloWorld',
           containerPort: 80
         })
       ],
@@ -393,7 +402,7 @@ export class HelloWorldStack extends cdk.Stack {
     });
     
     // to test your service, you need to know where to go. output the lb name so it is visible
-    const lbName = new cdk.CfnOutput(this,'lbName',{ value: helloWorldLB.loadBalancerDnsName, exportName: 'helloWorldLBName' });
+    const lbName = new cdk.CfnOutput(this,'lbName',{ value: HelloWorldLB.loadBalancerDnsName, exportName: 'HelloWorldLBName' });
     // TODO: send load balancer logs to S3!
     //       encrypt LogGroups
     //       redeploy when container updates
