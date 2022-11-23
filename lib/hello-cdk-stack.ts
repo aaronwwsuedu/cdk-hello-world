@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { Construct } from 'constructs';
+import { Construct, ConstructOrder } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
@@ -14,26 +14,48 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
-import { CodePipeline } from 'aws-cdk-lib/aws-events-targets';
+import { CloudWatchLogGroup, CodePipeline } from 'aws-cdk-lib/aws-events-targets';
 import { CodeBuildAction, CodeDeployEcsDeployAction } from 'aws-cdk-lib/aws-codepipeline-actions';
 
 var path = require('path');
 
-interface HelloWorldStackProps extends cdk.StackProps {
+interface HelloWorldDataStackProps extends cdk.StackProps {
+  default_vpc_id: string;
+};
+interface HelloWorldAdminStackProps extends cdk.StackProps {
   default_vpc_id: string;
   admin_access_nets: string[];
   ssh_access_key_name: string;
   ec2_instance_size: string;
+
+  efsFs: efs.IFileSystem;
+  gitrepo: codecommit.IRepository;
+  docker_repository: ecr.IRepository;
+};
+interface HelloWorldAppStackProps extends cdk.StackProps {
+  default_vpc_id: string;
+  ec2_instance_size: string;
+
+  efsFs: efs.IFileSystem;
+  gitrepo: codecommit.IRepository;
+  docker_repository: ecr.IRepository;
+  
+  loggroup: logs.ILogGroup;
+  ssmEnvParam: ssm.IParameter;
+  secretManagerEnvSecret: secrets.ISecret;
 };
 
-// Note: this class defines the entire workload. Best programming practices should apply here, it's better to break up this
-// giant class into components (make the code-deploy a class, etc etc)
-export class HelloWorldStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props: HelloWorldStackProps) {
+export class HelloWorldDataStack extends cdk.Stack {
+  public efsFs: efs.FileSystem;
+  public docker_repository: ecr.Repository;
+  public gitrepo: codecommit.Repository;
+  public ssmEnvParam: ssm.StringParameter;
+  public secretManagerEnvSecret: secrets.Secret;
+  public loggroup: logs.LogGroup;
+  
+  constructor(scope: Construct, id: string, props: HelloWorldDataStackProps) {
     super(scope, id, props);
 
-    // Record the path of the SSM parameter that contains the current Amazon Linux 2 AMI
-    const aws_ami_ssm_path = '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
 
     // WSU uses a peering account to define the VPC. use the default_vpc_id to define the VPC object
     const default_vpc = ec2.Vpc.fromLookup(this,'DefaultVpc',{ vpcId: props.default_vpc_id})
@@ -45,13 +67,13 @@ export class HelloWorldStack extends cdk.Stack {
     //kms_cloudwatch_key.addAlias('alias/HelloWorldCWKey');
 
     // create the group too.
-    const loggroup = new logs.LogGroup(this,'HelloCWLogs',{
+    this.loggroup = new logs.LogGroup(this,'HelloWorldLogGroup',{
       //encryptionKey: new kms.Key(this,'HelloWorldCWKey'),
       retention: logs.RetentionDays.SIX_MONTHS,
     });
 
     // create a docker repository to store our test docker container image. 
-    const docker_repository = new ecr.Repository(this,'HelloWorldECRepo',{
+    this.docker_repository = new ecr.Repository(this,'HelloWorldECRepo',{
       encryption: ecr.RepositoryEncryption.AES_256,
       repositoryName: 'helloworldrepo',
       // image scan on push at the repository level is depreciated, accounts should instead set a scan policy at the registry
@@ -60,116 +82,62 @@ export class HelloWorldStack extends cdk.Stack {
     });
     // add lifecycle rules to automatically remove old images. This improves our security posture by removing stale data, and reduces our
     // Amazon Inspector costs by reducing the number of images to scan.
-    docker_repository.addLifecycleRule({
+    this.docker_repository.addLifecycleRule({
       description: "Maintain no more than 5 tagged images",
       maxImageCount: 5,
       tagStatus: ecr.TagStatus.ANY,
     }),
-    docker_repository.addLifecycleRule({
+    this.docker_repository.addLifecycleRule({
       description: "Restrict repo to 1 untagged image",
       maxImageCount: 1,
       tagStatus: ecr.TagStatus.UNTAGGED
     })
 
-
-
     // create a git repo to store the Dockerfile for our hello world container
-    const gitrepo = new codecommit.Repository(this,'HelloWorld',{
+    this.gitrepo = new codecommit.Repository(this,'HelloWorld',{
       repositoryName: 'HelloWorld',
       description: "Hello World demo container source",
       code: codecommit.Code.fromDirectory(path.join(__dirname,'..','hello-world-container')),
       
     });
 
-    // create a pipeline to automatically rebuild and redeploy container when repository is updated.
-    const source_output = new codepipeline.Artifact('HelloWorldSourceArtifact');
-    const build_output = new codepipeline.Artifact('HelloWorldBuildArtifact');
-
-    const pipeline = new codepipeline.Pipeline(this,'HelloWorldPipeline',{
-      pipelineName: 'HelloWorldPipeline',
-      crossAccountKeys: false,
-    });
-    const sourceStage = pipeline.addStage({ stageName: 'Source'});
-    const buildStage = pipeline.addStage({ stageName: 'Build'})
-
-    sourceStage.addAction(new cdk.aws_codepipeline_actions.CodeCommitSourceAction({
-      actionName: 'Source', output: source_output, repository: gitrepo, branch: 'main'
-    }));
-
-    const pipelineProject = new codebuild.PipelineProject(this,'HelloWorldBuilder',{
-      projectName: "HelloWorldPipelineBuild",
-      buildSpec: codebuild.BuildSpec.fromObject({
-        version: '0.2',
-        artifacts: {
-          files: [ 'imagedefinitions.json' ]
-        },
-        phases: {
-          pre_build: {
-            commands: [
-              "$(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)",
-              "COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)",
-              "IMAGE_TAG=${COMMIT_HASH:=latest}"
-            ],
-          },
-          build: {
-            commands: [
-              "docker build -t $REPOSITORY_URI:latest .",
-              "docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG"
-            ],
-          },
-          post_build: {
-            commands: [
-              "docker push $REPOSITORY_URI:latest",
-              "docker push $REPOSITORY_URI:$IMAGE_TAG",
-              "printf '[{\"name\":\"%s\",\"imageUri\":\"%s\"}]' $ECS_CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json"
-            ],
-          }
-        }
-      }),
-      environmentVariables: {
-        REPOSITORY_URI: { value: docker_repository.repositoryUri },
-        ECS_CONTAINER_NAME: { value: 'HelloWorld' }
-      },
-      environment: {
-        computeType: codebuild.ComputeType.SMALL,
-        privileged: true,
-        
-      },
-      timeout: cdk.Duration.minutes(5),
-    }); 
-
-    buildStage.addAction(new cdk.aws_codepipeline_actions.CodeBuildAction({
-      actionName: 'HelloWorldDockerBuildImages',
-      input: source_output,
-      outputs: [ build_output ],
-      project: pipelineProject,
-    }))
-    // allow the build to write to ECR.
-    docker_repository.grantPullPush(pipelineProject)
-
-
     // create a systems manager parameter to store a value
-    const ssmEnvParam = new ssm.StringParameter(this,'HelloWorldSsmParam',{
+    this.ssmEnvParam = new ssm.StringParameter(this,'HelloWorldSsmParam',{
       description: "a parameter needed by hello world",
       parameterName: '/helloworld/development/test_ssm_param',
       tier: ssm.ParameterTier.STANDARD,
       stringValue: "this came from Systems Manager Parameter Store",
     })
     // create a secret that will store a secret value
-    const secretManagerEnvSecret = new secrets.Secret(this,'dockerSecret',{
+    this.secretManagerEnvSecret = new secrets.Secret(this,'dockerSecret',{
       secretStringValue: cdk.SecretValue.unsafePlainText("this came from Secrets Manager. Because it's stored in a template, this should not be a real secret."),
       secretName: 'helloworldsecret'
     })
 
     // Create EFS volume for files. EFS volume will be available to admin EC2 nodes we created above, and to the container we create below. The container will only 
     // get read access.
-    const efsFs = new efs.FileSystem(this,'HelloWorldExternalFiles',{
+    this.efsFs = new efs.FileSystem(this,'HelloWorldExternalFiles',{
       vpc: default_vpc,
       enableAutomaticBackups: true,
       encrypted: true,
       fileSystemName: 'HelloWorldEFS'
     });
-    
+
+  }
+};
+
+
+
+
+export class HelloWorldAdminStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: HelloWorldAdminStackProps) {
+    super(scope, id, props);
+
+    // WSU uses a peering account to define the VPC. use the default_vpc_id to define the VPC object
+    const default_vpc = ec2.Vpc.fromLookup(this,'DefaultVpc',{ vpcId: props.default_vpc_id})
+
+    // Record the path of the SSM parameter that contains the current Amazon Linux 2 AMI
+    const aws_ami_ssm_path = '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
 
     // create a userdata setup that self-patches new instances before they are available for use
     // because we want an ec2 instance to build our docker image, deploy files to efs, etc... use the userData to make 
@@ -182,7 +150,7 @@ export class HelloWorldStack extends cdk.Stack {
     userData.addCommands('systemctl enable docker.service')
     // add access to EFS filesystem
     userData.addCommands('mkdir /efs')
-    userData.addCommands('echo "' + efsFs.fileSystemId + ':/  /efs  efs _netdev,noresvport,tls 0 0" >> /etc/fstab')
+    userData.addCommands('echo "' + props.efsFs.fileSystemId + ':/  /efs  efs _netdev,noresvport,tls 0 0" >> /etc/fstab')
     // configure git to take advantage of our EC2 intance role
     userData.addCommands("git config --global credential.helper '!aws codecommit credential-helper $@'")
     userData.addCommands('git config --global credential.UseHttpPath true')
@@ -219,13 +187,90 @@ export class HelloWorldStack extends cdk.Stack {
     // make sure role created by Cdk can talk to Systems Manager
     adminAsg.role.addManagedPolicy(iam.ManagedPolicy.fromManagedPolicyArn(this,"SSMManagedInstance","arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"))
    
-    // make sure role created by Cdk can update our docker registry and our git repo.
-    docker_repository.grantPullPush(adminAsg.role) 
-    efsFs.grant(adminAsg.role,'elasticfilesystem:ClientWrite')
-    efsFs.connections.allowDefaultPortFrom(adminAsg)
-    gitrepo.grantPullPush(adminAsg.role)
+    // make sure role created by Cdk has IAM policy elements to write to our data resources.
+    props.docker_repository.grantPullPush(adminAsg.role) 
+    props.efsFs.grant(adminAsg.role,'elasticfilesystem:ClientWrite')
+    props.gitrepo.grantPullPush(adminAsg.role)
 
-  
+    // Allow admin instances to connect to the EFS
+    adminAsg.connections.allowToDefaultPort(props.efsFs)
+
+  }
+}
+
+export class HelloWorldAppStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: HelloWorldAppStackProps) {
+    super(scope, id, props);
+
+    // WSU uses a peering account to define the VPC. use the default_vpc_id to define the VPC object
+    const default_vpc = ec2.Vpc.fromLookup(this,'DefaultVpc',{ vpcId: props.default_vpc_id})
+    // create a pipeline to automatically rebuild and redeploy container when repository is updated.
+    const source_output = new codepipeline.Artifact('HelloWorldSourceArtifact');
+    const build_output = new codepipeline.Artifact('HelloWorldBuildArtifact');
+
+    const pipeline = new codepipeline.Pipeline(this,'HelloWorldPipeline',{
+      pipelineName: 'HelloWorldPipeline',
+      crossAccountKeys: false,
+    });
+    const sourceStage = pipeline.addStage({ stageName: 'Source'});
+    const buildStage = pipeline.addStage({ stageName: 'Build'})
+
+    sourceStage.addAction(new cdk.aws_codepipeline_actions.CodeCommitSourceAction({
+      actionName: 'Source', output: source_output, repository: props.gitrepo, branch: 'main'
+    }));
+
+    const pipelineProject = new codebuild.PipelineProject(this,'HelloWorldBuilder',{
+      projectName: "HelloWorldPipelineBuild",
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        artifacts: {
+          files: [ 'imagedefinitions.json' ]
+        },
+        phases: {
+          pre_build: {
+            commands: [
+              "$(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)",
+              "COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)",
+              "IMAGE_TAG=${COMMIT_HASH:=latest}"
+            ],
+          },
+          build: {
+            commands: [
+              "docker build -t $REPOSITORY_URI:latest .",
+              "docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG"
+            ],
+          },
+          post_build: {
+            commands: [
+              "docker push $REPOSITORY_URI:latest",
+              "docker push $REPOSITORY_URI:$IMAGE_TAG",
+              "printf '[{\"name\":\"%s\",\"imageUri\":\"%s\"}]' $ECS_CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json"
+            ],
+          }
+        }
+      }),
+      environmentVariables: {
+        REPOSITORY_URI: { value: props.docker_repository.repositoryUri },
+        ECS_CONTAINER_NAME: { value: 'HelloWorld' }
+      },
+      environment: {
+        computeType: codebuild.ComputeType.SMALL,
+        privileged: true,
+        
+      },
+      timeout: cdk.Duration.minutes(5),
+    }); 
+
+    buildStage.addAction(new cdk.aws_codepipeline_actions.CodeBuildAction({
+      actionName: 'HelloWorldDockerBuildImages',
+      input: source_output,
+      outputs: [ build_output ],
+      project: pipelineProject,
+    }))
+    // allow the build to write to ECR.
+    props.docker_repository.grantPullPush(pipelineProject)
+    
+
     // NOTICE HOW WE DID NOT NEED TO CREATE POLICIES. This is what CDK does for us!
 
     // From here forward, create the infrastructure to run the container. 
@@ -291,15 +336,15 @@ export class HelloWorldStack extends cdk.Stack {
     // add the container to the task, including any environment variables we want to push in to the docker runtime
     const container = HelloWorldTaskDefn.addContainer('HelloWorldContainer',{
       containerName: 'HelloWorld',
-      image: ecs.ContainerImage.fromEcrRepository(docker_repository,'latest'),
+      image: ecs.ContainerImage.fromEcrRepository(props.docker_repository,'latest'),
       environment: {
         'TEST_ENV_VAR': 'Hard-coded-string',
         //'TEST_SSM_VAR': 'foo',
         //'TEST_SECRET_VAR': 'bar',
       },
       secrets: {
-        'TEST_SECRET_VAR': ecs.Secret.fromSecretsManager(secretManagerEnvSecret),
-        'TEST_SSM_VAR': ecs.Secret.fromSsmParameter(ssmEnvParam),
+        'TEST_SECRET_VAR': ecs.Secret.fromSecretsManager(props.secretManagerEnvSecret),
+        'TEST_SSM_VAR': ecs.Secret.fromSsmParameter(props.ssmEnvParam),
       },
       essential: true,
       memoryLimitMiB: 512,
@@ -307,7 +352,7 @@ export class HelloWorldStack extends cdk.Stack {
       // to write temporary and pid files.
       //readonlyRootFilesystem: true,
       logging: ecs.LogDrivers.awsLogs({ 
-        logGroup: loggroup,
+        logGroup: props.loggroup,
         streamPrefix: 'HelloWorld',
         mode: ecs.AwsLogDriverMode.NON_BLOCKING}), // send container logs to cloudwatch
       portMappings: [ 
@@ -326,7 +371,7 @@ export class HelloWorldStack extends cdk.Stack {
     HelloWorldTaskDefn.addVolume({
       name: 'efs',
       efsVolumeConfiguration: {
-        fileSystemId: efsFs.fileSystemId,
+        fileSystemId: props.efsFs.fileSystemId,
         transitEncryption: 'ENABLED'
       }
     })
@@ -356,7 +401,8 @@ export class HelloWorldStack extends cdk.Stack {
     HelloWorldService.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY)
 
     // we need to explicity grant SG access from the hello world service to the EFS volume
-    efsFs.connections.allowFrom(HelloWorldService,ec2.Port.tcp(2049))
+    HelloWorldService.connections.allowToDefaultPort(props.efsFs)
+
 
     // create a load balancer to present the application
     const HelloWorldLB = new elb2.ApplicationLoadBalancer(this,'HelloWorldLB',{

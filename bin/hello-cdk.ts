@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { HelloWorldStack } from '../lib/hello-cdk-stack';
+import { HelloWorldDataStack,HelloWorldAdminStack,HelloWorldAppStack } from '../lib/hello-cdk-stack';
 
 const app = new cdk.App();
 
@@ -11,9 +11,28 @@ const app_tags = {
   'service-family':  'development',
   'environment':     'development',
   'management-mode': 'automatic'
-}
+};
 
-new HelloWorldStack(app, 'HelloWorldCdkStack', {
+const default_vpc_id = 'vpc-0fab9087c94fc9c4c';
+const admin_access_nets = [ '10.153.1.0/24' ];
+const ssh_access_key_name = 'aaronw-test-server';
+const ec2_instance_size = 't3.small';
+
+const dataStack = new HelloWorldDataStack(app,'HWCdkDataStack',{
+  /* If you don't specify 'env', this stack will be environment-agnostic.
+   * Account/Region-dependent features and context lookups will not work,
+   * but a single synthesized template can be deployed anywhere. */
+
+  /* Uncomment the next line to specialize this stack for the AWS Account
+   * and Region that are implied by the current CLI configuration. */
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+
+  /* apply these tags to every object created in the stack. */
+  tags: app_tags,
+
+  default_vpc_id: default_vpc_id,
+});
+const adminStack = new HelloWorldAdminStack(dataStack,'HWDCdkAdminStack',{
   /* If you don't specify 'env', this stack will be environment-agnostic.
    * Account/Region-dependent features and context lookups will not work,
    * but a single synthesized template can be deployed anywhere. */
@@ -31,13 +50,41 @@ new HelloWorldStack(app, 'HelloWorldCdkStack', {
   /* apply these tags to every object created in the stack. */
   tags: app_tags,
 
-
-  default_vpc_id: 'vpc-0fab9087c94fc9c4c',
-  admin_access_nets: [ '69.166.59.127/32', '10.153.1.0/24' ],
-  ssh_access_key_name: 'aaronw-test-server',
-  ec2_instance_size: 't3.small',
+  default_vpc_id: default_vpc_id,
+  admin_access_nets: admin_access_nets,
+  ssh_access_key_name: ssh_access_key_name,
+  ec2_instance_size: ec2_instance_size,
+  docker_repository: dataStack.docker_repository,
+  gitrepo: dataStack.gitrepo,
+  efsFs: dataStack.efsFs,
 });
+const appStack = new HelloWorldAppStack(dataStack,'HWCdkAppStack',{
+  /* If you don't specify 'env', this stack will be environment-agnostic.
+   * Account/Region-dependent features and context lookups will not work,
+   * but a single synthesized template can be deployed anywhere. */
 
+  /* Uncomment the next line to specialize this stack for the AWS Account
+   * and Region that are implied by the current CLI configuration. */
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+
+  /* Uncomment the next line if you know exactly what Account and Region you
+   * want to deploy the stack to. */
+  // env: { account: '123456789012', region: 'us-east-1' },
+
+  /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
+
+  /* apply these tags to every object created in the stack. */
+  tags: app_tags,
+
+  default_vpc_id: default_vpc_id,
+  ec2_instance_size: ec2_instance_size,
+  docker_repository: dataStack.docker_repository,
+  gitrepo: dataStack.gitrepo,
+  efsFs: dataStack.efsFs,
+  loggroup: dataStack.loggroup,
+  ssmEnvParam: dataStack.ssmEnvParam,
+  secretManagerEnvSecret: dataStack.secretManagerEnvSecret,
+});
 
 /* requirements 
 For the example application in this guide, the application needs at a conceptual level are:
