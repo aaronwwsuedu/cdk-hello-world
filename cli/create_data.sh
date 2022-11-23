@@ -1,5 +1,7 @@
 #!/bin/sh
 
+set -ev
+
 # this script creates the baseline data elements:
 #  a secret manager secret
 #  a systems manager parameter
