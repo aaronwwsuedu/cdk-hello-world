@@ -16,13 +16,14 @@ import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import { CloudWatchLogGroup, CodePipeline } from 'aws-cdk-lib/aws-events-targets';
 import { CodeBuildAction, CodeDeployEcsDeployAction } from 'aws-cdk-lib/aws-codepipeline-actions';
+import { CfnProfilePermission } from 'aws-cdk-lib/aws-signer';
 
 var path = require('path');
 
 interface HelloWorldDataStackProps extends cdk.StackProps {
   default_vpc_id: string;
 };
-interface HelloWorldAdminStackProps extends cdk.StackProps {
+interface HelloWorldInfrStackProps extends cdk.StackProps {
   default_vpc_id: string;
   admin_access_nets: string[];
   ssh_access_key_name: string;
@@ -43,8 +44,18 @@ interface HelloWorldAppStackProps extends cdk.StackProps {
   loggroup: logs.ILogGroup;
   ssmEnvParam: ssm.IParameter;
   secretManagerEnvSecret: secrets.ISecret;
+
+  ecsCluster: ecs.ICluster;
+  ecsCapacityProvider: ecs.AsgCapacityProvider;
+
+  source_artifact: codepipeline.Artifact;
+  build_artifact: codepipeline.Artifact;
 };
 
+//
+// Data stack contains data elements like Properties, EFS, S3, etc. These resources are typically not
+// destroyed with the CloudFormation Stack.
+//
 export class HelloWorldDataStack extends cdk.Stack {
   public efsFs: efs.FileSystem;
   public docker_repository: ecr.Repository;
@@ -52,19 +63,20 @@ export class HelloWorldDataStack extends cdk.Stack {
   public ssmEnvParam: ssm.StringParameter;
   public secretManagerEnvSecret: secrets.Secret;
   public loggroup: logs.LogGroup;
-  
+
+  public source_artifact: codepipeline.Artifact;
+  public build_artifact: codepipeline.Artifact;
+
+
   constructor(scope: Construct, id: string, props: HelloWorldDataStackProps) {
     super(scope, id, props);
 
+    // artifacts to store pipeline output.
+    this.source_artifact = new codepipeline.Artifact('HelloWorldSourceArtifact');
+    this.build_artifact = new codepipeline.Artifact('HelloWorldBuildArtifact');
 
     // WSU uses a peering account to define the VPC. use the default_vpc_id to define the VPC object
     const default_vpc = ec2.Vpc.fromLookup(this,'DefaultVpc',{ vpcId: props.default_vpc_id})
-
-    // create a key we will use to encrypt a cloudwatch group.
-    //const kms_cloudwatch_key = new kms.Key(this,'HelloWorldCWKey',{
-    //  enableKeyRotation: true,
-    //});
-    //kms_cloudwatch_key.addAlias('alias/HelloWorldCWKey');
 
     // create the group too.
     this.loggroup = new logs.LogGroup(this,'HelloWorldLogGroup',{
@@ -126,11 +138,15 @@ export class HelloWorldDataStack extends cdk.Stack {
   }
 };
 
+//
+// Infrastructure stack contains resources needed to bring service online. This will contain the 
+// ECS cluster, any administrative resources to set up the service, etc.
+// 
+export class HelloWorldInfrStack extends cdk.Stack {
+  public ecsCluster: ecs.Cluster;
+  public asgCapacityProvider: ecs.AsgCapacityProvider;
 
-
-
-export class HelloWorldAdminStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props: HelloWorldAdminStackProps) {
+  constructor(scope: Construct, id: string, props: HelloWorldInfrStackProps) {
     super(scope, id, props);
 
     // WSU uses a peering account to define the VPC. use the default_vpc_id to define the VPC object
@@ -195,9 +211,60 @@ export class HelloWorldAdminStack extends cdk.Stack {
     // Allow admin instances to connect to the EFS
     adminAsg.connections.allowToDefaultPort(props.efsFs)
 
+    // create ECS cluster. Disable fargate because we don't want it for this demo example, but enable container insights to get better metrics
+    // of the containerized workload.
+    this.ecsCluster = new ecs.Cluster(this,'HelloWorldECS',{
+      vpc: default_vpc,
+      containerInsights: true,
+      enableFargateCapacityProviders: false,
+      clusterName: "HelloWorldCluster"
+    });
+    // create an autoscaling group to run ec2 instances attached to the container. Use the ECS-optimized AmazonLinux AMI
+    // we are not using a launchTemplate here.
+    const ecsAutoScalingGroup = new autoscaling.AutoScalingGroup(this,'HelloWorldASG',{
+      autoScalingGroupName: "HelloWorldECSAsg",
+      vpc: default_vpc,
+      vpcSubnets: default_vpc.selectSubnets( { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } ),
+      instanceType: new ec2.InstanceType(props.ec2_instance_size),
+      machineImage: ecs.EcsOptimizedImage.amazonLinux2(),
+      minCapacity: 0,
+      maxCapacity: 3,
+      newInstancesProtectedFromScaleIn: false,
+      maxInstanceLifetime: cdk.Duration.days(7),
+      terminationPolicies: [
+        autoscaling.TerminationPolicy.OLDEST_INSTANCE,
+        autoscaling.TerminationPolicy.CLOSEST_TO_NEXT_INSTANCE_HOUR,
+        autoscaling.TerminationPolicy.DEFAULT,
+      ],
+      updatePolicy: autoscaling.UpdatePolicy.rollingUpdate(),
+      requireImdsv2: true
+    });
+
+    // cdk will insert userdata to make sure these instances join the cluster automatically. However, we want to extend this so we know
+    // new members are pre-patched before they join.
+    // create a userdata setup that self-patches new instances before they are available for use
+    const ecsMemberUserData = ec2.UserData.forLinux();
+    ecsMemberUserData.addCommands('yum update -y');
+    ecsMemberUserData.addOnExitCommands('reboot')
+    ecsAutoScalingGroup.addUserData(ecsMemberUserData.render())
+
+    
+
+    // define a capacity provider that uses the ASG to allow ECS to create and destroy instances, assign it to our cluster.
+    this.asgCapacityProvider = new ecs.AsgCapacityProvider(this,'HelloWorldCap',{
+      capacityProviderName: "HelloWorldECSCapacityProvider",
+      autoScalingGroup: ecsAutoScalingGroup,
+      machineImageType: ecs.MachineImageType.AMAZON_LINUX_2,
+      enableManagedScaling: true,
+      enableManagedTerminationProtection: false
+    })
+    this.ecsCluster.addAsgCapacityProvider(this.asgCapacityProvider)
   }
 }
 
+//
+// The app stack defines the application, defines pipelines to build it, and defines the load balancer to present it.
+//
 export class HelloWorldAppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: HelloWorldAppStackProps) {
     super(scope, id, props);
@@ -205,8 +272,6 @@ export class HelloWorldAppStack extends cdk.Stack {
     // WSU uses a peering account to define the VPC. use the default_vpc_id to define the VPC object
     const default_vpc = ec2.Vpc.fromLookup(this,'DefaultVpc',{ vpcId: props.default_vpc_id})
     // create a pipeline to automatically rebuild and redeploy container when repository is updated.
-    const source_output = new codepipeline.Artifact('HelloWorldSourceArtifact');
-    const build_output = new codepipeline.Artifact('HelloWorldBuildArtifact');
 
     const pipeline = new codepipeline.Pipeline(this,'HelloWorldPipeline',{
       pipelineName: 'HelloWorldPipeline',
@@ -216,7 +281,7 @@ export class HelloWorldAppStack extends cdk.Stack {
     const buildStage = pipeline.addStage({ stageName: 'Build'})
 
     sourceStage.addAction(new cdk.aws_codepipeline_actions.CodeCommitSourceAction({
-      actionName: 'Source', output: source_output, repository: props.gitrepo, branch: 'main'
+      actionName: 'Source', output: props.source_artifact, repository: props.gitrepo, branch: 'main'
     }));
 
     const pipelineProject = new codebuild.PipelineProject(this,'HelloWorldBuilder',{
@@ -263,69 +328,13 @@ export class HelloWorldAppStack extends cdk.Stack {
 
     buildStage.addAction(new cdk.aws_codepipeline_actions.CodeBuildAction({
       actionName: 'HelloWorldDockerBuildImages',
-      input: source_output,
-      outputs: [ build_output ],
+      input: props.source_artifact,
+      outputs: [ props.build_artifact ],
       project: pipelineProject,
     }))
     // allow the build to write to ECR.
     props.docker_repository.grantPullPush(pipelineProject)
     
-
-    // NOTICE HOW WE DID NOT NEED TO CREATE POLICIES. This is what CDK does for us!
-
-    // From here forward, create the infrastructure to run the container. 
-
-
-
-    // create ECS cluster. Disable fargate because we don't want it for this demo example, but enable container insights to get better metrics
-    // of the containerized workload.
-    const ecsCluster = new ecs.Cluster(this,'HelloWorldECS',{
-      vpc: default_vpc,
-      containerInsights: true,
-      enableFargateCapacityProviders: false,
-      clusterName: "HelloWorldCluster"
-    });
-    // create an autoscaling group to run ec2 instances attached to the container. Use the ECS-optimized AmazonLinux AMI
-    // we are not using a launchTemplate here.
-    const ecsAutoScalingGroup = new autoscaling.AutoScalingGroup(this,'HelloWorldASG',{
-      autoScalingGroupName: "HelloWorldECSAsg",
-      vpc: default_vpc,
-      vpcSubnets: default_vpc.selectSubnets( { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } ),
-      instanceType: new ec2.InstanceType(props.ec2_instance_size),
-      machineImage: ecs.EcsOptimizedImage.amazonLinux2(),
-      minCapacity: 0,
-      maxCapacity: 3,
-      newInstancesProtectedFromScaleIn: false,
-      maxInstanceLifetime: cdk.Duration.days(7),
-      terminationPolicies: [
-        autoscaling.TerminationPolicy.OLDEST_INSTANCE,
-        autoscaling.TerminationPolicy.CLOSEST_TO_NEXT_INSTANCE_HOUR,
-        autoscaling.TerminationPolicy.DEFAULT,
-      ],
-      updatePolicy: autoscaling.UpdatePolicy.rollingUpdate(),
-      requireImdsv2: true
-    });
-
-    // cdk will insert userdata to make sure these instances join the cluster automatically. However, we want to extend this so we know
-    // new members are pre-patched before they join.
-    // create a userdata setup that self-patches new instances before they are available for use
-    const ecsMemberUserData = ec2.UserData.forLinux();
-    ecsMemberUserData.addCommands('yum update -y');
-    ecsMemberUserData.addOnExitCommands('reboot')
-    ecsAutoScalingGroup.addUserData(ecsMemberUserData.render())
-
-    
-
-    // define a capacity provider that uses the ASG to allow ECS to create and destroy instances, assign it to our cluster.
-    const ecsCapacityProvider = new ecs.AsgCapacityProvider(this,'HelloWorldCap',{
-      capacityProviderName: "HelloWorldECSCapacityProvider",
-      autoScalingGroup: ecsAutoScalingGroup,
-      machineImageType: ecs.MachineImageType.AMAZON_LINUX_2,
-      enableManagedScaling: true,
-      enableManagedTerminationProtection: false
-    })
-    ecsCluster.addAsgCapacityProvider(ecsCapacityProvider)
-   
     // define a task to run our service. this doesn't run the service, it only defines it
     const HelloWorldTaskDefn = new ecs.TaskDefinition(this,'HelloWorldTaskDefn',{
       compatibility: ecs.Compatibility.EC2,
@@ -339,8 +348,6 @@ export class HelloWorldAppStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(props.docker_repository,'latest'),
       environment: {
         'TEST_ENV_VAR': 'Hard-coded-string',
-        //'TEST_SSM_VAR': 'foo',
-        //'TEST_SECRET_VAR': 'bar',
       },
       secrets: {
         'TEST_SECRET_VAR': ecs.Secret.fromSecretsManager(props.secretManagerEnvSecret),
@@ -363,10 +370,6 @@ export class HelloWorldAppStack extends cdk.Stack {
       // command
       // healthCheck
     });
-    // grant the container access to any props we create.
-    // ssm_param.grantRead(HelloWorldTaskDefn.taskRole)
-    //ssmEnvParam.grantRead(HelloWorldTaskDefn.taskRole)
-    //secretManagerEnvSecret.grantRead(HelloWorldTaskDefn.taskRole)
 
     HelloWorldTaskDefn.addVolume({
       name: 'efs',
@@ -385,12 +388,12 @@ export class HelloWorldAppStack extends cdk.Stack {
     // create the service. The service runs the task definition. IN our case, we want the service to be highly available, so we'll run at least two instances.
     const HelloWorldService = new ecs.Ec2Service(this,'HelloWorldService',{
       serviceName: "HelloWorldService",
-      cluster: ecsCluster,
+      cluster: props.ecsCluster,
       taskDefinition: HelloWorldTaskDefn,
       desiredCount: 2,
       capacityProviderStrategies: [
         {
-          capacityProvider: ecsCapacityProvider.capacityProviderName,
+          capacityProvider: props.ecsCapacityProvider.capacityProviderName,
           weight: 1
         }
       ],
@@ -403,6 +406,10 @@ export class HelloWorldAppStack extends cdk.Stack {
     // we need to explicity grant SG access from the hello world service to the EFS volume
     HelloWorldService.connections.allowToDefaultPort(props.efsFs)
 
+    // and finally, enable access to data resources via IAM policy
+    //props.efsFs.grant(HelloWorldTaskDefn.taskRole,'elasticfilesystem:ClientRead')
+    //props.ssmEnvParam.grantRead(HelloWorldTaskDefn.taskRole)
+    //props.secretManagerEnvSecret.grantRead(HelloWorldTaskDefn.taskRole)
 
     // create a load balancer to present the application
     const HelloWorldLB = new elb2.ApplicationLoadBalancer(this,'HelloWorldLB',{
@@ -419,7 +426,7 @@ export class HelloWorldAppStack extends cdk.Stack {
       new cdk.aws_codepipeline_actions.EcsDeployAction({
         actionName: "DeployAction",
         service: HelloWorldService,
-        input: build_output,
+        input: props.build_artifact,
       })
     );
 
@@ -450,9 +457,6 @@ export class HelloWorldAppStack extends cdk.Stack {
     // to test your service, you need to know where to go. output the lb name so it is visible
     const lbName = new cdk.CfnOutput(this,'lbName',{ value: HelloWorldLB.loadBalancerDnsName, exportName: 'HelloWorldLBName' });
     // TODO: send load balancer logs to S3!
-    //       encrypt LogGroups
-    //       redeploy when container updates
-    //       codecommit to store container
-    //       codepipeline to build
+    //  cloudwatch log organization
   }
 }
