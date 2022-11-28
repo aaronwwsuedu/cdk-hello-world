@@ -69,8 +69,13 @@ aws ecs authorize-security-group-ingress --group-name ${EC2_EFS_ACCESS_SG} --pro
 
 
 # Create Roles
+# ec2 instance roles
 aws iam create-role --role-name ${IAM_ADMIN_INSTANCE_ROLE} --assume-role-policy-document '{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow", "Principal": { "Service": "ec2.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }'
 aws iam create-role --role-name ${IAM_ECS_INSTANCE_PROFILE} --assume-role-policy-document '{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow", "Principal": { "Service": "ec2.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }'
+# ECS ASG drain/lifecycle roles
+#aws iam create-role --role-name HWCdkDataStackHWDCdkInfrS-HelloWorldASGDrainECSHoo-COLNUX65J3R0    HelloWorldASGDrainECSHookFunctionServiceRoleC35FCFF0
+#aws iam create-role --role-name HWCdkDataStackHWDCdkInfrS-HelloWorldASGLifecycleHo-6EV8HJ2100QQ	HelloWorldASGLifecycleHookDrainHookRoleEC8E8D76
+aws iam create-role --role-name ${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE} --assume-role-policy-document ''
 
 # Create Instance Profiles
 aws iam create-instance-profile --instance-profile-name ${IAM_ADMIN_INSTANCE_PROFILE}
@@ -143,16 +148,42 @@ EOF
 aws autoscaling create-launch-configuration --launch-configuration-name ${AUTOSCALE_ADMIN_LAUNCH_CONFIG} ---cli-input-json file://${TMPDIR}/adminLaunchConfig.json
 aws autoscaling create-launch-configuration --launch-configuration-name ${AUTOSCALE_ECS_LAUNCH_CONFIG} ---cli-input-json file://${TMPDIR}/ecsLaunchConfig.json
 
+# Create SNS Topic for Lifecycle Hook
+aws sns create-topic --name "${SNS_ASG_LIFECYCLE_TOPIC}"
+# get ARN for topic
+SNS_ASG_LIFECYCLE_TOPIC_ARN=`aws sns list-topics --output text| grep ${SNS_ASG_LIFECYCLE_TOPIC} | awk '{print $2}'`
+
 # Create AutoScalingGroups
-
-
-# Create ASG Drain Hooks for ECS
+aws autoscaling create-auto-scaling-group --auto-scaling-group-name ${AUTOSCALE_ADMIN_GROUP} --launch-configuration-name ${AUTOSCALE_ADMIN_LAUNCH_CONFIG} \
+  --min-size 0 --max-size 1 --desired-capacity 0 \
+  --vpc-zone-identifier `echo ${VPC_SUBNET_IDS} | tr ' ' ','` \
+  --max-instance-lifetime 604800
+aws autoscaling create-auto-scaling-group --auto-scaling-group-name ${AUTOSCALE_ECS_GROUP} --launch-configuration-name ${AUTOSCALE_ECS_LAUNCH_CONFIG} \
+  --min-size 0 --max-size 3 --desired-capacity 0 \
+  --vpc-zone-identifier `echo ${VPC_SUBNET_IDS} | tr ' ' ','` \
+  --termination-policies "OldestInstance,ClosestToNextInstanceHour,Default" \
+  --max-instance-lifetime 604800 \
+  --lifecycle-hook-specification-list "[ { \"LifecycleHookName\": \"helloWorldASGLifecycleHook\", \"LifecycleTransition\": \"autoscaling:EC2_INSTANCE_TERMINATING\", \"NotificationTargetARN\": \"${SNS_ASG_LIFECYCLE_TOPIC_ARN}\", \"RoleARN\": \"arn:aws:iam::${AWS_ACCOUJNT_ID}:role/${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE}\", \"HeartbeatTimeout\": 300, \"GlobalTimeout\": 30000, \"DefaultResult\": \"CONTINUE\" } ]"
+AWS_ECS_ASG_ARN=`aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${AUTOSCALE_ECS_GROUP} --query "AutoScalingGroups[].AutoScalingGroupARN" --output text`
 
 # Create Capacity Provider
+aws ecs create-capacity-provider --name ${ECS_CAPACITY_PROVIDER} \
+  --auto-scaling-group-provider autoScalingGroupArn=${AWS_ECS_ASG_ARN},managedScaling={status="ENABLED",targetCapacity=100,minimumScalingStepSize=1,maximumScalingStepSize=10000,instanceWarmupPeriod=300},managedTerminationProtection="DISABLED"
 
 # Create Cluster
+aws ecs create-cluster --cluster-name ${ECS_CLUSTER_NAME} \
+  --capacity-providers ${ECS_CAPACITY_PROVIDER} \
+  --settings containerInsights=enabled 
+
+# Create ASG Drain Hooks for ECS
+# aws autoscaling create-lifecycle-hook...
+#aws lambda create-function HelloWorldASGDrainECSHookFunction135D003B...
+#aws lambda set-permission HelloWorldASGDrainECSHookFunctionAllowInvokeHWCdkDataStackHWDCdkInfrStackHelloWorldASGLifecycleHookDrainHookTopic9F32314D76E0FFC2
 
 # Create Role Policies
-
+# aws iam create-role-policy HelloWorldASGDrainECSHookFunctionServiceRoleDefaultPolicyA344A7D6
+# aws iam create-role-policy HelloWorldASGInstanceRoleDefaultPolicyA5BCAAB0
+# aws iam create-role-policy HelloWorldASGLifecycleHookDrainHookRoleDefaultPolicy84CCDFC2
+# aws iam create-role-policy HelloWorldAdminAsgInstanceRoleDefaultPolicy4C32FAF4
 
 # at this point, we have a cluster that is capable of automatically growing to support tasks that run on it.
