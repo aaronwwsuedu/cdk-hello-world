@@ -21,6 +21,39 @@ Edit the file bin/hello-cdk.ts and change the following variables:
 * ssh_access_key_name: use a precreated SSH key pair that you've enrolled using the AWS console.
 
 
+## To deploy:
+
+* Make changes to the app to use your pre-created virtual private network, role based access network, and ssh key
+* Log in to AWS SSO for your organization and get the access keys via the CLI option, save to the
+  command environment where you will run CDK.
+* Deploy the data layer: `cdk deploy HWCdkDataStack`
+* Deploy the infrastrucutre layer: `cdk deploy HWCdkDataStack/HWCdkAppStack`
+* Use the admin AutoScaling Group to create the initial docker image
+    * Start an admin instance: `aws autoscaling update-auto-scaling-group --auto-scaling-group-name HelloWorldAdminAsg --desired-capacity 1`
+    * Find the admin instance: `aws ec2 describe-instances --filters Name=tag:aws:autoscaling:groupName,Values=HelloWorldAdminAsg`
+    * Wait for the admin instance to start and settle, then connect using SSH to the private IP **Note that you must be connecting from the admin network you specified above**
+    * Once connected, create the docker image:
+        sudo -i
+        git config --global credential.helper '!aws codecommit credential-helper $@'
+        git config --global credential.UseHttpPath true
+        ACCOUNT=`aws sts get-caller-identity --output text | awk '{print $1}'`
+
+        git clone https://git-codecommit.us-west-2.amazonaws.com/v1/repos/HelloWorld
+        cd HelloWorld
+
+        aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.us-west-2.amazonaws.com
+        docker build -t helloworldrepo .
+        docker tag helloworldrepo:latest $ACCOUNT.dkr.ecr.us-west-2.amazonaws.com/helloworldrepo:latest
+        docker push $ACCOUNT.dkr.ecr.us-west-2.amazonaws.com/helloworldrepo:latest
+
+    * While the admin instance is running, put some contents in the EFS volume:
+        echo "this is the contents of a file" >> /efs/foo.txt
+* Terminate the admin instance by adjusting the autoscaling group:  `aws autoscaling update-auto-scaling-group --auto-scaling-group-name HelloWorldAdminAsg --desired-capacity 0`
+* Deploy the service layer: `cdk deploy HWCdkDataStack/HWDCdkInfrStack/HWCdkAppStack`
+
+To remove:
+ * First remove the CloudFormat
+
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
