@@ -64,8 +64,8 @@ aws ec2 create-security-group --group-name ${EC2_ADMIN_INSTANCE_SG} --vpc-id=${V
 aws ec2 create-security-group --group-name ${EC2_ECS_INSTANCE_SG} --vpc-id=${VPC_ID}
 
 # Create Security Group Rules for infrastructure access
-aws ecs authorize-security-group-ingress --group-name ${EC2_ADMIN_INSTANCE_SG} --protocol all --cidr ${ROLE_BASED_NETWORK_SRC_CIDR}
-aws ecs authorize-security-group-ingress --group-name ${EC2_EFS_ACCESS_SG} --protocol tcp --port 2049 --source-group ${EC2_ADMIN_INSTANCE_SG}
+aws ec2 authorize-security-group-ingress --group-name ${EC2_ADMIN_INSTANCE_SG} --protocol all --cidr ${ROLE_BASED_NETWORK_SRC_CIDR}
+aws ec2 authorize-security-group-ingress --group-name ${EC2_EFS_ACCESS_SG} --protocol tcp --port 2049 --source-group ${EC2_ADMIN_INSTANCE_SG}
 
 
 # Create Roles
@@ -73,9 +73,8 @@ aws ecs authorize-security-group-ingress --group-name ${EC2_EFS_ACCESS_SG} --pro
 aws iam create-role --role-name ${IAM_ADMIN_INSTANCE_ROLE} --assume-role-policy-document '{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow", "Principal": { "Service": "ec2.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }'
 aws iam create-role --role-name ${IAM_ECS_INSTANCE_PROFILE} --assume-role-policy-document '{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow", "Principal": { "Service": "ec2.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }'
 # ECS ASG drain/lifecycle roles
-#aws iam create-role --role-name HWCdkDataStackHWDCdkInfrS-HelloWorldASGDrainECSHoo-COLNUX65J3R0    HelloWorldASGDrainECSHookFunctionServiceRoleC35FCFF0
-#aws iam create-role --role-name HWCdkDataStackHWDCdkInfrS-HelloWorldASGLifecycleHo-6EV8HJ2100QQ	HelloWorldASGLifecycleHookDrainHookRoleEC8E8D76
-aws iam create-role --role-name ${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE} --assume-role-policy-document ''
+aws iam create-role --role-name ${IAM_ASG_DRAINHOOK_ROLE} --assume-role-policy-document '{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow", "Principal": { "Service": "lambda.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }'
+aws iam create-role --role-name ${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE} --assume-role-policy-document '{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow", "Principal": { "Service": "autoscaling.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }'
 
 # Create Instance Profiles
 aws iam create-instance-profile --instance-profile-name ${IAM_ADMIN_INSTANCE_PROFILE}
@@ -181,9 +180,161 @@ aws ecs create-cluster --cluster-name ${ECS_CLUSTER_NAME} \
 #aws lambda set-permission HelloWorldASGDrainECSHookFunctionAllowInvokeHWCdkDataStackHWDCdkInfrStackHelloWorldASGLifecycleHookDrainHookTopic9F32314D76E0FFC2
 
 # Create Role Policies
-# aws iam create-role-policy HelloWorldASGDrainECSHookFunctionServiceRoleDefaultPolicyA344A7D6
-# aws iam create-role-policy HelloWorldASGInstanceRoleDefaultPolicyA5BCAAB0
-# aws iam create-role-policy HelloWorldASGLifecycleHookDrainHookRoleDefaultPolicy84CCDFC2
-# aws iam create-role-policy HelloWorldAdminAsgInstanceRoleDefaultPolicy4C32FAF4
+cat <<EOF > ${TMPDIR}/pol_${IAM_ASG_DRAINHOOK_ROLE}
+{
+    "RoleName": "${IAM_ASG_DRAINHOOK_ROLE}",
+    "PolicyName": "${IAM_ASG_DRAINHOOK_ROLE}-policy",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": [
+                    "ec2:DescribeHosts",
+                    "ec2:DescribeInstanceAttribute",
+                    "ec2:DescribeInstanceStatus",
+                    "ec2:DescribeInstances"
+                ],
+                "Resource": "*",
+                "Effect": "Allow"
+            },
+            {
+                "Action": "autoscaling:CompleteLifecycleAction",
+                "Resource": "arn:aws:autoscaling:${AWS_REGION}:${AWS_ACCOUNT_ID}:autoScalingGroup:*:autoScalingGroupName/${AUTOSCALE_ECS_LAUNCH_CONFIG}",
+                "Effect": "Allow"
+            },
+            {
+                "Condition": {
+                    "ArnEquals": {
+                        "ecs:cluster": "arn:aws:ecs:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${ECS_CLUSTER_NAME}"
+                    }
+                },
+                "Action": [
+                    "ecs:DescribeContainerInstances",
+                    "ecs:DescribeTasks",
+                    "ecs:ListTasks",
+                    "ecs:UpdateContainerInstancesState"
+                ],
+                "Resource": "*",
+                "Effect": "Allow"
+            },
+            {
+                "Action": [
+                    "ecs:ListContainerInstances",
+                    "ecs:SubmitContainerStateChange",
+                    "ecs:SubmitTaskStateChange"
+                ],
+                "Resource": "arn:aws:ecs:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${ECS_CLUSTER_NAME}",
+                "Effect": "Allow"
+            }
+        ]
+    }
+}
+EOF
+cat <<EOF > ${TMPDIR}/pol_${IAM_ADMIN_INSTANCE_ROLE}
+{
+    "RoleName": "${IAM_ADMIN_INSTANCE_ROLE}",
+    "PolicyName": "${IAM_ADMIN_INSTANCE_ROLE}-policy",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": [
+                    "ecs:DeregisterContainerInstance",
+                    "ecs:RegisterContainerInstance",
+                    "ecs:Submit*"
+                ],
+                "Resource": "arn:aws:ecs:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${ECS_CLUSTER_NAME}",
+                "Effect": "Allow"
+            },
+            {
+                "Condition": {
+                    "ArnEquals": {
+                        "ecs:cluster": "arn:aws:ecs:${AWS_REGION}:${AWS_ACCOUNT_ID}:cluster/${ECS_CLUSTER_NAME}"
+                    }
+                },
+                "Action": [
+                    "ecs:Poll",
+                    "ecs:StartTelemetrySession"
+                ],
+                "Resource": "*",
+                "Effect": "Allow"
+            },
+            {
+                "Action": [
+                    "ecr:GetAuthorizationToken",
+                    "ecs:DiscoverPollEndpoint",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                ],
+                "Resource": "*",
+                "Effect": "Allow"
+            }
+        ]
+    }
+}
+EOF
+cat <<EOF > ${TMPDIR}/pol_${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE}
+{
+    "RoleName": "${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE}",
+    "PolicyName": "${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE}-policy",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": "sns:Publish",
+                "Resource": "arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:XXXHWCdkDataStackHWDCdkInfrStackFEA392BE-HelloWorldASGLifecycleHookDrainHookTopicAF655FED-AM5IJXkiCIJs",
+                "Effect": "Allow"
+            }
+        ]
+    }
+}
+EOF
+cat <<EOF > ${TMPDIR}/pol_${IAM_ECS_INSTANCE_PROFILE}
+{
+    "RoleName": "${IAM_ECS_INSTANCE_PROFILE}",
+    "PolicyName": "${IAM_ECS_INSTANCE_PROFILE}-policy",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:PutImage",
+                    "ecr:UploadLayerPart"
+                ],
+                "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/${ECR_REPO_NAME}",
+                "Effect": "Allow"
+            },
+            {
+                "Action": "ecr:GetAuthorizationToken",
+                "Resource": "*",
+                "Effect": "Allow"
+            },
+            {
+                "Action": "elasticfilesystem:ClientWrite",
+                "Resource": "arn:aws:elasticfilesystem:${AWS_REGION}:${AWS_ACCOUNT_ID}:file-system/${EFS_ID}",
+                "Effect": "Allow"
+            },
+            {
+                "Action": [
+                    "codecommit:GitPull",
+                    "codecommit:GitPush"
+                ],
+                "Resource": "arn:aws:codecommit:${AWS_REGION}:${AWS_ACCOUNT_ID}:${CODECOMMIT_REPO_NAME}",
+                "Effect": "Allow"
+            }
+        ]
+    }
+}
+EOF
+
+aws iam put-role-policy --cli-input-json file://${TMPDIR}/pol_${IAM_ASG_DRAINHOOK_ROLE}
+aws iam put-role-policy --cli-input-json file://${TMPDIR}/pol_${IAM_ADMIN_INSTANCE_ROLE}
+aws iam put-role-policy --cli-input-json file://${TMPDIR}/pol_${IAM_ECS_LIFECYCLE_HOOK_WRITE_ROLE}
+aws iam put-role-policy --cli-input-json file://${TMPDIR}/pol_${IAM_ECS_INSTANCE_PROFILE}
 
 # at this point, we have a cluster that is capable of automatically growing to support tasks that run on it.
