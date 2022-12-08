@@ -8,8 +8,6 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as efs from 'aws-cdk-lib/aws-efs';
 import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 
-var path = require('path');
-
 interface HelloWorldInfrStackProps extends cdk.StackProps {
   default_vpc_id: string;
   admin_access_nets: string[];
@@ -49,9 +47,6 @@ export class HelloWorldInfrStack extends cdk.Stack {
     // add access to EFS filesystem
     userData.addCommands('mkdir /efs')
     userData.addCommands('echo "' + props.efsFs.fileSystemId + ':/  /efs  efs _netdev,noresvport,tls 0 0" >> /etc/fstab')
-    // configure git to take advantage of our EC2 intance role
-    userData.addCommands("git config --global credential.helper '!aws codecommit credential-helper $@'")
-    userData.addCommands('git config --global credential.UseHttpPath true')
     // add command to reboot when config is done.
     userData.addOnExitCommands('reboot')
 
@@ -129,8 +124,6 @@ export class HelloWorldInfrStack extends cdk.Stack {
     ecsMemberUserData.addCommands('yum update -y');
     ecsMemberUserData.addOnExitCommands('reboot')
     ecsAutoScalingGroup.addUserData(ecsMemberUserData.render())
-
-    
 
     // define a capacity provider that uses the ASG to allow ECS to create and destroy instances, assign it to our cluster.
     this.asgCapacityProvider = new ecs.AsgCapacityProvider(this,'HelloWorldCap',{

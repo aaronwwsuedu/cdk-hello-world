@@ -8,10 +8,6 @@ set -ev
 # it builds on previous objects to create an ECS service that connects
 # to our data elements and a load balancer to enable multi-AZ support
 
-# Create S3 buckets
-##HelloWorldPipelineArtifactsBucket354C8892	hwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu	AWS::S3::Bucket	CREATE_COMPLETE	-
-##HelloWorldPipelineArtifactsBucketPolicyE9A93709	HWCdkDataStackHWDCdkInfr-HelloWorldPipelineArtif-KFJ287AU1C2K	AWS::S3::BucketPolicy	CREATE_COMPLETE	-
-
 
 # Create Roles
 
@@ -53,8 +49,8 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CB_BUILDER_ROLE}
                     "logs:PutLogEvents"
                 ],
                 "Resource": [
-                    "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/codebuild/XXXHelloWorldPipelineBuild:*",
-                    "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/codebuild/XXXHelloWorldPipelineBuild"
+                    "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/codebuild/${CB_PROJECT_NAME}:*",
+                    "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/aws/codebuild/${CB_PROJECT_NAME}"
                 ],
                 "Effect": "Allow"
             },
@@ -66,7 +62,7 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CB_BUILDER_ROLE}
                     "codebuild:CreateReportGroup",
                     "codebuild:UpdateReport"
                 ],
-                "Resource": "arn:aws:codebuild:${AWS_REGION}:${AWS_ACCOUNT_ID}:report-group/XXXHelloWorldPipelineBuild-*",
+                "Resource": "arn:aws:codebuild:${AWS_REGION}:${AWS_ACCOUNT_ID}:report-group/${CB_PROJECT_NAME}-*",
                 "Effect": "Allow"
             },
             {
@@ -83,8 +79,8 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CB_BUILDER_ROLE}
                     "s3:PutObjectVersionTagging"
                 ],
                 "Resource": [
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu",
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu/*"
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}",
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}/*"
                 ],
                 "Effect": "Allow"
             },
@@ -123,7 +119,7 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CP_BUILDACTION_ROLE}
                     "codebuild:StartBuild",
                     "codebuild:StopBuild"
                 ],
-                "Resource": "arn:aws:codebuild:${AWS_REGION}:${AWS_ACCOUNT_ID}:project/XXXHelloWorldPipelineBuild",
+                "Resource": "arn:aws:codebuild:${AWS_REGION}:${AWS_ACCOUNT_ID}:project/${CB_PROJECT_NAME}",
                 "Effect": "Allow"
             }
         ]
@@ -169,8 +165,8 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CP_DEPLOYACTION_ROLE}
                     "s3:List*"
                 ],
                 "Resource": [
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu",
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu/*"
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}",
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}/*"
                 ],
                 "Effect": "Allow"
             }
@@ -187,7 +183,7 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CP_EVENT_ROLE}
         "Statement": [
             {
                 "Action": "codepipeline:StartPipelineExecution",
-                "Resource": "arn:aws:codepipeline:${AWS_REGION}:${AWS_ACCOUNT_ID}:XXXHelloWorldPipeline",
+                "Resource": "arn:aws:codepipeline:${AWS_REGION}:${AWS_ACCOUNT_ID}:${CP_PIPELINENAME}",
                 "Effect": "Allow"
             }
         ]
@@ -215,8 +211,8 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CP_PIPELINE_ROLE}
                     "s3:PutObjectVersionTagging"
                 ],
                 "Resource": [
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu",
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu/*"
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}",
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}/*"
                 ],
                 "Effect": "Allow"
             },
@@ -256,8 +252,8 @@ cat <<EOF ${TMPDIR}/pol_${IAM_CP_SOURCEACTION_ROLE}
                     "s3:PutObjectVersionTagging"
                 ],
                 "Resource": [
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu",
-                    "arn:aws:s3:::XXXhwcdkdatastackhwdcdkinfr-helloworldpipelineartifa-6c1dwzzobliu/*"
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}",
+                    "arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}/*"
                 ],
                 "Effect": "Allow"
             },
@@ -302,7 +298,7 @@ cat <<EOF ${TMPDIR}/pol_${IAM_ECS_TASK_EXECUTION_ROLE}
                     "logs:CreateLogStream",
                     "logs:PutLogEvents"
                 ],
-                "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:XXXHWCdkDataStack-HelloWorldLogGroup138672A6-69JuNGMrTR3z:*",
+                "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:${LOGS_GROUP_NAME}:*",
                 "Effect": "Allow"
             },
             {
@@ -451,14 +447,16 @@ aws ecs register-task-defintion --family ${ECS_TASK_DEFN_NAME} --cli-input-json 
 ##HelloWorldLB559BC142	arn:aws:elasticloadbalancing:${AWS_REGION}:${AWS_ACCOUNT_ID}:loadbalancer/app/HelloWorldAlb/c0bc9f1406bb81c1	AWS::ElasticLoadBalancingV2::LoadBalancer	CREATE_COMPLETE	-
 ##HelloWorldLBhttpListenerE88305E3	arn:aws:elasticloadbalancing:${AWS_REGION}:${AWS_ACCOUNT_ID}:listener/app/HelloWorldAlb/c0bc9f1406bb81c1/5f0235c3df06d249	AWS::ElasticLoadBalancingV2::Listener	CREATE_COMPLETE	-
 ##HelloWorldLBhttpListenerHelloWorldTargetGroup622A1BA1	arn:aws:elasticloadbalancing:${AWS_REGION}:${AWS_ACCOUNT_ID}:targetgroup/HWCdk-Hello-1F0MAXNSBGAYF/bc2a25d2a95efba0	AWS::ElasticLoadBalancingV2::TargetGroup	CREATE_COMPLETE	-
-
+aws alb2 create-load-balancer
+aws alb2 create-listener
+aws alb2 create-target-group --name ${ALB_TARGET_GROUP_NAME}...
 
 # Create Service
 cat <<EOF > ${TMPDIR}/ecsService.json
 {
     "loadBalancers": [
         {
-            "targetGroupArn": "arn:aws:elasticloadbalancing:${AWS_REGION}:${AWS_ACCOUNT_ID}:targetgroup/HWCdk-Hello-1F0MAXNSBGAYF/bc2a25d2a95efba0",
+            "targetGroupArn": "arn:aws:elasticloadbalancing:${AWS_REGION}:${AWS_ACCOUNT_ID}:targetgroup/XXXHWCdk-Hello-1F0MAXNSBGAYF/bc2a25d2a95efba0",
             "containerName": "HelloWorld",
             "containerPort": 80
         }   
@@ -504,15 +502,162 @@ cat <<EOF > ${TMPDIR}/ecsService.json
 EOF
 aws ecs create-service --cluster ${ECS_CLUSTER_NAME} --service-name ${ECS_SERVICE_NAME} --cli-input-json file://${TMPDIR}/ecsService.json
 
+# Create CodeBuild Project
+cat <<EOF >${TMPDIR}/HWcbProject.yaml
+{
+    "name": "${CB_PROJECT_NAME}",
+    "description": "Codebuild project to automatically rebuild hello world container from source",
+    "source": {
+        "type": "CODEPIPELINE",
+        "buildspec": ""{\n  \"version\": \"0.2\",\n  \"artifacts\": {\n    \"files\": [\n      \"imagedefinitions.json\"\n    ]\n  },\n  \"phases\": {\n    \"pre_build\": {\n      \"commands\": [\n        \"$(aws ecr get-login --region \$AWS_DEFAULT_REGION --no-include-email)\",\n        \"COMMIT_HASH=$(echo \$CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)\",\n        \"IMAGE_TAG=\${COMMIT_HASH:=latest}\"\n      ]\n    },\n    \"build\": {\n      \"commands\": [\n        \"docker build -t \$REPOSITORY_URI:latest .\",\n        \"docker tag \$REPOSITORY_URI:latest \$REPOSITORY_URI:\$IMAGE_TAG\"\n      ]\n    },\n    \"post_build\": {\n      \"commands\": [\n        \"docker push \$REPOSITORY_URI:latest\",\n        \"docker push \$REPOSITORY_URI:\$IMAGE_TAG\",\n        \"printf '[{\\\"name\\\":\\\"%s\\\",\\\"imageUri\\\":\\\"%s\\\"}]' \$ECS_CONTAINER_NAME \$REPOSITORY_URI:\$IMAGE_TAG > imagedefinitions.json\"\n      ]\n    }\n  }\n}"",
+    },
+    "sourceVersion": "",
+    "artifacts": {
+        "type": "CODEPIPELINE",
+    },
+    "cache": {
+        "type": "NO_CACHE",
+    },
+    "environment": {
+        "type": "ARM_CONTAINER",
+        "image": "aws/codebuild/amazonlinux2-aarch64-standard:1.0",
+        "computeType": "BUILD_GENERAL1_SMALL",
+        "environmentVariables": [
+            {
+                "name": "REPOSITORY_URI",
+                "value": "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${CODECOMMIT_REPO_NAME}",
+                "type": "PLAINTEXT"
+            },
+            {
+                "name": "ECS_CONTAINER_NAME",
+                "value": "HelloWorld",
+                "type": "PLAINTEXT"
+            },
+        ],
+        "privilegedMode": true,
+        "certificate": "",
+        "imagePullCredentialsType": "CODEBUILD"
+    },
+    "serviceRole": "${IAM_CB_BUILDER_ROLE}",
+    "timeoutInMinutes": 5,
+    "queuedTimeoutInMinutes": 0,
+    "encryptionKey": "alias/aws/s3",
+    "tags": [
+        {
+            "key": "",
+            "value": ""
+        }
+    ],
+}
+EOF
 
-# Create CodePipeline
-##HelloWorldPipelineC82DE2F9	HelloWorldPipeline	AWS::CodePipeline::Pipeline	CREATE_COMPLETE	-
-
-##HelloWorldBuilderD9D62A10	HelloWorldPipelineBuild	AWS::CodeBuild::Project	CREATE_COMPLETE	-
-
-##HelloWorldPipelineHWCdkDataStackHWDCdkInfrStackHWCdkAppStackHelloWorldPipeline3B3D5C0FmainEventRule11ED48A5	HWCdkDataStackHWDCdkInfrS-HelloWorldPipelineHWCdkD-17HIKUKDGYNBI	AWS::Events::Rule	CREATE_COMPLETE	-
+aws codebuild create-project --name ${CB_PROJECT_NAME} --cli-input-json file://${TMPDIR}/HWcbProject.json
 
 
+# Create CodePipeline using CodeBuild
+cat <<EOF >${TMPDIR}/HWpipeline.json
+{
+    "name": "${CP_PIPELINENAME}",
+    "roleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${IAM_CP_PIPELINE_ROLE}",
+    "artifactStore": {
+        "type": "S3",
+        "location": "${S3_CP_ARTIFACT_BUCKET}"
+    },
+    "stages": [
+        {
+            "name": "Source",
+            "actions": [
+                {
+                    "name": "Source",
+                    "actionTypeId": {
+                        "category": "Source",
+                        "owner": "AWS",
+                        "provider": "CodeCommit",
+                        "version": "1"
+                    },
+                    "runOrder": 1,
+                    "configuration": {
+                        "BranchName": "main",
+                        "PollForSourceChanges": "false",
+                        "RepositoryName": "${CODECOMMIT_REPO_NAME}"
+                    },
+                    "outputArtifacts": [
+                        {
+                            "name": "HelloWorldSourceArtifact"
+                        }
+                    ],
+                    "inputArtifacts": [],
+                    "roleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${IAM_CP_SOURCEACTION_ROLE}"
+                }
+            ]
+        },
+        {
+            "name": "Build",
+            "actions": [
+                {
+                    "name": "HelloWorldDockerBuildImages",
+                    "actionTypeId": {
+                        "category": "Build",
+                        "owner": "AWS",
+                        "provider": "CodeBuild",
+                        "version": "1"
+                    },
+                    "runOrder": 1,
+                    "configuration": {
+                        "ProjectName": "HelloWorldPipelineBuild"
+                    },
+                    "outputArtifacts": [
+                        {
+                            "name": "HelloWorldBuildArtifact"
+                        }
+                    ],
+                    "inputArtifacts": [
+                        {
+                            "name": "HelloWorldSourceArtifact"
+                        }
+                    ],
+                    "roleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${IAM_CP_BUILDACTION_ROLE}"
+                }
+            ]
+        },
+        {
+            "name": "Deploy",
+            "actions": [
+                {
+                    "name": "DeployAction",
+                    "actionTypeId": {
+                        "category": "Deploy",
+                        "owner": "AWS",
+                        "provider": "ECS",
+                        "version": "1"
+                    },
+                    "runOrder": 1,
+                    "configuration": {
+                        "ClusterName": "${ECS_CLUSTER_NAME}",
+                        "ServiceName": "${ECS_SERVICE_NAME}"
+                    },
+                    "outputArtifacts": [],
+                    "inputArtifacts": [
+                        {
+                            "name": "HelloWorldBuildArtifact"
+                        }
+                    ],
+                    "roleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${IAM_CP_DEPLOYACTION_ROLE}"
+                }
+            ]
+        }
+    ],
+    "version": 1
+}
+EOF
+aws codepipeline create-pipeline --pipeline ${CP_PIPELINENAME} --cli-input-json file://${TMPDIR}/HWpipeline.json
+
+# Create EventBridge rule/target to invoke codepipeline when repo is updated
+aws events put-rule --name ${EVENT_CP_RULE} \
+  --event-pattern "{\"detail-type\":[\"CodeCommit Repository State Change\"],\"resources\":[\"arn:aws:codecommit:us-west-2:${AWS_ACCOUNT_ID}:${helloWorldGitRepo}\"],\"source\":[\"aws.codecommit\"],\"detail\":{\"event\":[\"referenceCreated\",\"referenceUpdated\"],\"referenceName\":[\"main\"]}}" \
+  --state ENABLED
+aws events --rule ${EVENT_CP_RULE} \
+  --targets "Id"="Target0","Arn"="arn:aws:codepipeline:${AWS_REGION}:${AWS_ACCOUNT_ID}:${CP_PIPELINENAME}","RoleArn"="arn:aws:iam:${AWS_ACCOUNT_ID}:role/${IAM_CP_EVENT_ROLE}"
 
 # service should be available
 

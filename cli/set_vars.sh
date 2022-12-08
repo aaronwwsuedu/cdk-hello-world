@@ -41,3 +41,8 @@ export ECR_REPO_NAME=helloWorldDockerRepo
 export LOGS_GROUP_NAME=helloWorldLogGroup
 
 export EFS_FS_NAME=helloWorldEFS
+
+export CP_PIPELINENAME=helloWorldDemoCodePipeline
+export CB_PROJECT_NAME=helloWorldDemoBuildProject
+
+export EVENT_CP_RULE=helloWorldDemoBuildEvent

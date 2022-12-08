@@ -12,8 +12,6 @@ import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 
-var path = require('path');
-
 interface HelloWorldAppStackProps extends cdk.StackProps {
   default_vpc_id: string;
 
@@ -177,11 +175,6 @@ export class HelloWorldAppStack extends cdk.Stack {
     // we need to explicity grant SG access from the hello world service to the EFS volume
     HelloWorldService.connections.allowToDefaultPort(props.efsFs)
 
-    // and finally, enable access to data resources via IAM policy
-    //props.efsFs.grant(HelloWorldTaskDefn.taskRole,'elasticfilesystem:ClientRead')
-    //props.ssmEnvParam.grantRead(HelloWorldTaskDefn.taskRole)
-    //props.secretManagerEnvSecret.grantRead(HelloWorldTaskDefn.taskRole)
-
     // create a load balancer to present the application
     const HelloWorldLB = new elb2.ApplicationLoadBalancer(this,'HelloWorldLB',{
       loadBalancerName: "HelloWorldAlb",
@@ -200,12 +193,6 @@ export class HelloWorldAppStack extends cdk.Stack {
         input: props.build_artifact,
       })
     );
-
-    //Unable to access the artifact with Amazon S3 object key 'HelloWorldPipeline/HelloWorld/IBRxdN7'
-    // located in the Amazon S3 artifact bucket 'helloworldcdkstack-helloworldpipelineartifactsbuc-cyhlli4csqn7'. 
-    //The provided role does not have sufficient permissions.
-    
-
 
     const httpListener = HelloWorldLB.addListener('httpListener',{
       port: 80,
