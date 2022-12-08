@@ -35,3 +35,10 @@ SGID_EFS=`aws ec2 describe-security-groups --filters Name=group-name,Values=sg_$
 for i in ${VPC_SUBNET_IDS}; do
     aws efs create-mount-target --file-system-id ${EFS_FS_ID} --security-groups ${SGID_EFS} --subnet-id ${i}
 done
+
+
+aws s3api create-bucket --bucket ${S3_CP_ARTIFACT_BUCKET} --region ${AWS_REGION} --acl private --create-bucket-configuration LocationConstraint=us-west-2
+aws s3api put-bucket-encryption --bucket ${S3_CP_ARTIFACT_BUCKET} --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm": "aws:kms"},"BucketKeyEnabled": false}]}'
+aws s3api put-public-access-block --bucket ${S3_CP_ARTIFACT_BUCKET} --public-access-block-configuration '{"BlockPublicAcls": true,"IgnorePublicAcls": true,"BlockPublicPolicy": true,"RestrictPublicBuckets": true}'
+aws s3api put-bucket-policy --bucket ${S3_CP_ARTIFACT_BUCKET} \
+   --policy "{\"Statement\":[{\"Effect\":\"Deny\",\"Principal\": {\"AWS\":\"*\"},\"Action\": \"s3:*\",\"Resource\":[\"arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}\",\"arn:aws:s3:::${S3_CP_ARTIFACT_BUCKET}/*\"],\"Condition\":{\"Bool\":{\"aws:SecureTransport\":\"false\"}}}]}"
