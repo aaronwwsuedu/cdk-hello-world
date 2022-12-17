@@ -15,11 +15,8 @@ set -ev
 #  Security groups required for the instances created by the autoscaling groups
 #  Roles required by the instances and cluster
 #  
-ADMIN_LAUNCH_CONFIG=adminHelloWorldLaunchConfig
-ECS_LAUNCH_CONFIG=ecsHelloWorldLaunchConfig
-ADMIN_AMI=`aws ssm get-parameter....`
-ECS_AMI=`aws ssm ....`
-ADMIN_SSH_KEY=aaronw-test-key # replace with your own!
+ADMIN_AMI=`aws ssm get-parameter --name ${EC2_ADMIN_AMI_PARAM} --query "Parameter.Value"`
+ECS_AMI=`aws ssm get-parameter --name ${EC2_ECS_AMI_PARAM} --query "Parameter.Value"`
 
 # make a temporary directory to store files on disk
 TMPDIR=`mktemp -d data.XXXXXX`
@@ -56,12 +53,17 @@ sudo service iptables save
 echo ECS_AWSVPC_BLOCK_IMDS=true >> /etc/ecs/ecs.config
 EOF
 
-ADMIN_USER_DATA=`base64 -i admin_user_data.txt`
-ECS_USER_DATA=`base64 -i ecs_user_data.txt`
+ADMIN_USER_DATA=`base64 -i ${TMPDIR}/admin_user_data.txt`
+ECS_USER_DATA=`base64 -i ${TMPDIR}/ecs_user_data.txt`
 
 # Create Security Group(s)
-aws ec2 create-security-group --group-name ${EC2_ADMIN_INSTANCE_SG} --vpc-id=${VPC_ID}
-aws ec2 create-security-group --group-name ${EC2_ECS_INSTANCE_SG} --vpc-id=${VPC_ID}
+aws ec2 create-security-group --group-name ${EC2_ADMIN_INSTANCE_SG} --vpc-id=${VPC_ID} --description "Admin EC2 instances to manage app data"
+aws ec2 create-security-group --group-name ${EC2_ECS_INSTANCE_SG} --vpc-id=${VPC_ID} --description "SG for ECS cluster members"
+
+# get IDs for SG just created
+EC2_ADMIN_INSTANCE_SG_ID=`aws ec2 describe-security-groups --filters Name=group-name,Values=${EC2_ADMIN_INSTANCE_SG} --query 'SecurityGroups[].GroupId' --output text`
+EC2_ECS_INSTANCE_SG_ID=`aws ec2 describe-security-groups --filters Name=group-name,Values=${EC2_ECS_INSTANCE_SG} --query 'SecurityGroups[].GroupId' --output text`
+
 
 # Create Security Group Rules for infrastructure access
 aws ec2 authorize-security-group-ingress --group-name ${EC2_ADMIN_INSTANCE_SG} --protocol all --cidr ${ROLE_BASED_NETWORK_SRC_CIDR}

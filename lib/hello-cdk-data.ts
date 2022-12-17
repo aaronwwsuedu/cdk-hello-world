@@ -9,6 +9,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as codecommit from 'aws-cdk-lib/aws-codecommit';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 
+// require path so we can reference local code to put initial commit into codecommit
 var path = require('path');
 
 interface HelloWorldDataStackProps extends cdk.StackProps {
